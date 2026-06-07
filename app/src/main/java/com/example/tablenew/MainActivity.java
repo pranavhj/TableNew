@@ -6,12 +6,18 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.appcompat.app.AppCompatActivity;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -26,12 +32,14 @@ public class MainActivity extends AppCompatActivity {
     private TextView mPositionDisplay;
 
     private static final int STEP_SIZE = 500;
-
     private int currentPosition = 0;
     private String logs = "";
 
     String serverIP = "10.0.0.239";
     int port = 34175;
+
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,109 +47,92 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "onCreate: server=" + serverIP + ":" + port);
         setContentView(R.layout.activity_main);
 
-        mSend = (Button) findViewById(R.id.Send);
-        mBtnUp = (Button) findViewById(R.id.btnUp);
-        mBtnDown = (Button) findViewById(R.id.btnDown);
-        mBtnRefresh = (Button) findViewById(R.id.btnRefresh);
-        mCommand = (EditText) findViewById(R.id.commandText);
-        mLogViewer = (TextView) findViewById(R.id.LogViewer);
-        mPositionDisplay = (TextView) findViewById(R.id.positionDisplay);
+        mSend        = findViewById(R.id.Send);
+        mBtnUp       = findViewById(R.id.btnUp);
+        mBtnDown     = findViewById(R.id.btnDown);
+        mBtnRefresh  = findViewById(R.id.btnRefresh);
+        mCommand     = findViewById(R.id.commandText);
+        mLogViewer   = findViewById(R.id.LogViewer);
+        mPositionDisplay = findViewById(R.id.positionDisplay);
 
-        // Check if permission is granted
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.INTERNET}, 123);
         }
 
-        // Fetch calibration buttons
-        String resp = SendMessage("getAllCalibration");
-        String[] cals = resp.split("@");
-
-        for (int i = 0; i < cals.length; i++) {
-            Button myButton = new Button(this);
-            myButton.setText(cals[i]);
-
+        // Fetch calibration buttons async — UI stays responsive while waiting
+        sendAsync("getAllCalibration", resp -> {
             LinearLayout layout = findViewById(R.id.linearlayout);
-            layout.addView(myButton);
-
-            int finalI = i;
-            myButton.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    String cal = cals[finalI];
-                    int splitIndex = cal.indexOf(":");
-                    String calName = cal.substring(0, splitIndex);
+            String[] cals = resp.split("@");
+            for (int i = 0; i < cals.length; i++) {
+                if (cals[i].isEmpty()) continue;
+                Button btn = new Button(this);
+                btn.setText(cals[i]);
+                layout.addView(btn);
+                int idx = i;
+                btn.setOnClickListener(v -> {
+                    String cal = cals[idx];
+                    String calName = cal.substring(0, cal.indexOf(":"));
                     String command = "moveTo:" + calName;
-                    String response = SendMessage(command);
+                    sendAsync(command, response -> {
+                        appendLog("Command:" + command + " response:" + response);
+                        refreshPosition();
+                    });
+                });
+            }
+            refreshPosition();
+        });
 
-                    logs += "Command:" + command + " response:" + response + "\r\n";
-                    mLogViewer.setText(logs);
-
-                    refreshPosition();
-                }
+        mBtnUp.setOnClickListener(v -> {
+            String command = "goto:" + (currentPosition + STEP_SIZE);
+            sendAsync(command, response -> {
+                appendLog("Command:" + command + " response:" + response);
+                refreshPosition();
             });
-        }
+        });
 
-        // Up: move to current position + STEP_SIZE
-        mBtnUp.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                int target = currentPosition + STEP_SIZE;
-                String command = "goto:" + target;
-                String response = SendMessage(command);
-                logs += "Command:" + command + " response:" + response + "\r\n";
-                mLogViewer.setText(logs);
+        mBtnDown.setOnClickListener(v -> {
+            String command = "goto:" + (currentPosition - STEP_SIZE);
+            sendAsync(command, response -> {
+                appendLog("Command:" + command + " response:" + response);
                 refreshPosition();
-            }
+            });
         });
 
-        // Down: move to current position - STEP_SIZE
-        mBtnDown.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                int target = currentPosition - STEP_SIZE;
-                String command = "goto:" + target;
-                String response = SendMessage(command);
-                logs += "Command:" + command + " response:" + response + "\r\n";
-                mLogViewer.setText(logs);
-                refreshPosition();
-            }
-        });
+        mBtnRefresh.setOnClickListener(v -> refreshPosition());
 
-        mBtnRefresh.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                refreshPosition();
-            }
+        mSend.setOnClickListener(v -> {
+            String command = String.valueOf(mCommand.getText());
+            mCommand.setText("");
+            sendAsync(command, response -> appendLog("Command:" + command + " response:" + response));
         });
+    }
 
-        mSend.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                String command = String.valueOf(mCommand.getText());
-                mCommand.setText("");
-                String response = SendMessage(command);
-                logs += "Command:" + command + " response:" + response + "\r\n";
-                mLogViewer.setText(logs);
-            }
-        });
-
-        // Read initial position
-        refreshPosition();
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        executor.shutdown();
     }
 
     private void refreshPosition() {
-        String response = SendMessage("getenc");
-        try {
-            currentPosition = Integer.parseInt(response.trim());
-            mPositionDisplay.setText(String.valueOf(currentPosition));
-        } catch (NumberFormatException e) {
-            mPositionDisplay.setText("? (" + response.trim() + ")");
-        }
+        sendAsync("getenc", response -> {
+            try {
+                currentPosition = Integer.parseInt(response.trim());
+                mPositionDisplay.setText(String.valueOf(currentPosition));
+            } catch (NumberFormatException e) {
+                mPositionDisplay.setText("? (" + response.trim() + ")");
+            }
+        });
     }
 
-    public String SendMessage(String command) {
-        TCPClient tcp = new TCPClient(serverIP, port);
-        String response = tcp.sendMessage(command);
-        return response;
+    private void appendLog(String line) {
+        logs += line + "\r\n";
+        mLogViewer.setText(logs);
+    }
+
+    private void sendAsync(String command, Consumer<String> callback) {
+        executor.execute(() -> {
+            String response = new TCPClient(serverIP, port).sendMessage(command);
+            mainHandler.post(() -> callback.accept(response));
+        });
     }
 }
