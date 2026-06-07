@@ -1,6 +1,7 @@
 package com.example.tablenew;
 
 import android.os.Handler;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -11,6 +12,8 @@ import java.net.ServerSocket;
 import java.net.Socket;
 
 public class TCPClient {
+
+    private static final String TAG = "TableNew";
 
     private String serverIp = "192.168.1.8"; // Replace with your server's IP address
     private int serverPort = 1234; // Replace with your desired port
@@ -27,27 +30,21 @@ public class TCPClient {
     {
         try
         {
+            Log.d(TAG, "TCP → " + serverIp + ":" + serverPort + " cmd=" + message);
             socket = new Socket(serverIp, serverPort);
             errorDuringSocketInit = null;
             response = null;
-            // Perform socket operations here (send/receive data)
-            //socket.close();
-            //Socket socket = new Socket(serverIp, serverPort);
             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             PrintWriter writer = new PrintWriter(socket.getOutputStream(), true);
 
-
-            // Send a message to the server
             writer.println(message);
-
-            // Receive and print the server's response
-
             response = reader.readLine();
             socket.close();
+            Log.d(TAG, "TCP ← resp=" + response);
 
         } catch (IOException e)
         {
-            e.printStackTrace();
+            Log.e(TAG, "TCP error: " + e.getMessage(), e);
             errorDuringSocketInit = e.getMessage() + " " + e.getCause().getLocalizedMessage();
             throw e;
         }
